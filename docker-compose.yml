@@ -1,0 +1,26 @@
+# P5 本地开发：Postgres + pgvector
+# 启动：docker compose up -d
+# 连接：postgres://rag:rag@localhost:5433/rag_kb（与 .env.example 的 DATABASE_URL 一致）
+# 注意：宿主 5432 可能被其他项目（如 aichart-postgres）占用，这里用 5433；
+#       数据库只暴露本机端口（127.0.0.1），不对公网。
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: rag-kb-pgvector
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag_kb
+    volumes:
+      - rag-kb-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag_kb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  rag-kb-pgdata:

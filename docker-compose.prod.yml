@@ -1,0 +1,71 @@
+# P6 生产部署：web（Next.js）+ db（pgvector）+ nginx（反代 / SSE）
+# 用法：
+#   docker compose -f docker-compose.prod.yml up -d --build
+# 依赖：02-rag-kb/.env.production 提供密钥（见部署文档）
+# 说明：
+#   - db 不对公网（无 ports 映射，仅 Compose 内网）
+#   - nginx 映射宿主 8081（80 通常已被 ChatBot 占用；公网访问 http://IP:8081）
+#   - SSE 需 proxy_buffering off；数据在 volume rag-kb-prod-pgdata，重建容器不丢
+
+services:
+  db:
+    # 官方源即可（pgvector 是社区镜像；若服务器拉不动，可用带前缀的镜像仓库地址，
+    # 如 PGVECTOR_IMAGE=registry.cn-hangzhou.aliyuncs.com/xxx/pgvector-pgvector:pg16）
+    image: ${PGVECTOR_IMAGE:-pgvector/pgvector:pg16}
+    container_name: rag-kb-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag}
+      POSTGRES_DB: rag_kb
+    volumes:
+      - rag-kb-prod-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag_kb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      # 国内网络拉不动官方 node 镜像时，在 .env.production 加：
+      #   NODE_BASE=docker.1ms.run/library/node:22-alpine
+      args:
+        NODE_BASE: ${NODE_BASE:-node:22-alpine}
+    container_name: rag-kb-web
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      # 与 db 服务同 Compose 网络，用服务名解析
+      DATABASE_URL: postgres://rag:${POSTGRES_PASSWORD:-rag}@db:5432/rag_kb
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+    # db 只在 Compose 内网访问，web 不暴露端口给宿主机
+
+  nginx:
+    # 默认官方源；国内网络拉不动时在 .env.production 加：
+    #   NGINX_IMAGE=docker.1ms.run/library/nginx:1.27-alpine
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
+    container_name: rag-kb-nginx
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "8081:80"
+      # 有域名 + 证书后放开 443（见 nginx/conf.d/rag-kb.conf 内注释）
+      # - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # 证书目录（可选，挂载真实证书后启用 443）
+      # - ./nginx/certs:/etc/nginx/certs:ro
+
+volumes:
+  # 与开发 compose（docker-compose.yml）的 rag-kb-pgdata 区分，避免共用开发库
+  rag-kb-prod-pgdata:
